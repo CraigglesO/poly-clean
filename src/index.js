@@ -122,6 +122,9 @@ function removeKinks (lineString: LineString, newPolyLines?: Array<LineString> =
     intersect
   ]
   if (booleanClockwise(newPolyLine)) newPolyLine.reverse()
+  // clean line
+  cleanLine(newPolyLine)
+  // store it
   newPolyLines.push(newPolyLine)
   // now we update the lineString to remove the kink and polyLine
   lineString = [
