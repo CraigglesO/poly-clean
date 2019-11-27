@@ -19,10 +19,14 @@ export function cleanMultiPolygon (multiPoly: MultiPolygon) {
 
 export function cleanPoly (poly: Polygon): Array<LineString> {
   // step 1: Fix outer-rings
-  poly[0] = removeKinks(poly[0])
+  const [newOuterRing, newPolyLines] = removeKinks(poly[0])
+  // store the new outer ring
+  poly[0] = newOuterRing
   // step 2: Fix holes
   for (let i = 1; i < poly.length; i++) {
-    poly[i] = cleanHoles(poly[i], poly[0])
+    const [newHole, newHoles] = cleanHoles(poly[i], poly[0])
+    // update hole
+    poly[i] = newHole
     // if new holes were created during clean, store
     if (newHoles) poly.push(...newHoles)
     // if the updated hole is a null, just remove it
@@ -31,11 +35,13 @@ export function cleanPoly (poly: Polygon): Array<LineString> {
       i--
     }
   }
+  // return newPolyLines
+  return newPolyLines
 }
 
-function cleanHoles (hole: LineString, outerRing: LineString): LineString {
+function cleanHoles (hole: LineString, outerRing: LineString): [LineString, Array<LineString>] {
   // first remove kinks
-  hole = removeKinks(hole)
+  const [cleanHole, excessHoles] = removeKinks(hole)
   // next ensure points are within outerRing
   const outside = []
   const inside = []
@@ -66,8 +72,8 @@ function cleanHoles (hole: LineString, outerRing: LineString): LineString {
     line = []
   }
   // if no inside points, just "remove" the hole. If no outside points, we don't have to edit the hole
-  if (!inside.length) return null
-  else if (!outside.length) return cleanHole
+  if (!inside.length) return [null, excessHoles]
+  else if (!outside.length) return [cleanHole, excessHoles]
   // now we simplify the lines during merge... zig-zag between the inside and outside lines working from "startState"
   isInside = startState
   const newHole = []
@@ -98,88 +104,83 @@ function cleanHoles (hole: LineString, outerRing: LineString): LineString {
   cleanLine(newHole)
   // last, check if length is larger than 3, otherwise "remove" it
   if (newHole.length < 4) return null
-  return newHole
+  return [newHole, excessHoles]
 }
 
 // remove kinks
-function removeKinks (lineString: LineString): LineString {
+function removeKinks (lineString: LineString): [LineString, Array<LineString>] {
   // first find all the kinks
   const intersections = findKinks(lineString)
   // gather up the starts
   const starts = Object.keys(intersections)
   // if no kinks, just return
-  if (!starts.length) return lineString
+  if (!starts.length) return [lineString, []]
   // prep new lineString and other variables
   const newOuterRing = []
+  const newPolyLines = []
   let currentIndex: number = 0
-  const start = +starts[0]
-  let intersectionList: Intersections = intersections[start]
-  // add all before intersection
-  newOuterRing.push(...lineString.slice(currentIndex, start + 1))
-  if (intersectionList.length === 1) {
-    const { index, intersect } = intersectionList[0]
-    newOuterRing.push(
-      intersect,
-      ...(lineString.slice(start + 1, index + 1).reverse()),
-      intersect
-    )
-    // update last index
-    currentIndex = index + 1
-  } else {
-    // sort by closest to the edge
-    intersectionList = intersectionList.sort((a, b) => {
-      return distance(lineString[start], a.intersect) - distance(lineString[start], b.intersect)
-    })
-    // we just create new poly's as it's become "messy" at this point, so dissassociate the data
-    let minIndex: number, maxIndex: number, startIndex: number, nextIndex: number
-    // forward store
-    for (let j = 0, ill = intersectionList.length; j < ill; j += 2) {
-      const { index, intersect } = intersectionList[j]
-      // first store the intersect
-      newOuterRing.push(intersect)
-      // if even index, we add intermediateLine, otherwise just add the next intersection
-      if (j % 2 === 0) {
+  let start: number, intersectionList: Intersection
+  for (let i = 0, sl = starts.length; i < sl; i++) {
+    start = +starts[i]
+    intersectionList = intersections[start]
+    // add all before intersection
+    newOuterRing.push(...lineString.slice(currentIndex, start + 1))
+    if (intersectionList.length === 1) {
+      const { index, intersect } = intersectionList[0]
+      newOuterRing.push(
+        intersect,
+        ...(lineString.slice(start + 1, index + 1).reverse()),
+        intersect
+      )
+      // update last index
+      currentIndex = index + 1
+    } else {
+      // sort by closest to the edge
+      intersectionList = intersectionList.sort((a, b) => {
+        return distance(lineString[start], a.intersect) - distance(lineString[start], b.intersect)
+      })
+      // we just create new poly's as it's become "messy" at this point, so dissassociate the data
+      let line: LineString = []
+      let minIndex: number, maxIndex: number, startIndex: number, nextIndex: number
+      for (let j = 0, ill = intersectionList.length; j < ill; j++) {
+        const { index, intersect } = intersectionList[j]
+        // first store the current intersect
+        line.push(intersect)
         // get the content between intersects
-        startIndex = (j + 1 < ill) ? index : start
+        startIndex = (j + 1 < ill) ? index : index - 1
         nextIndex = (j + 1 < ill) ? intersectionList[j + 1].index : intersectionList[j].index
         // slice always looks 1 forward
         startIndex++
         nextIndex++
         minIndex = Math.min(startIndex, nextIndex)
         maxIndex = Math.max(startIndex, nextIndex)
-        // create next inner contents of the line and store
-        newOuterRing.push(...lineString.slice(minIndex, maxIndex).reverse())
-        // store the next intersect
-        if (j + 1 < ill) newOuterRing.push(intersectionList[j + 1].intersect)
+        // create next inner contents of the line
+        const intermediateLine = lineString.slice(minIndex, maxIndex)
+        // if even index, we need to reverse the inner contents. Otherwise we store the next intersection first
+        if (j % 2 === 0) {
+          intermediateLine.reverse()
+          line.push(...intermediateLine)
+          // if there is another index ahead, store the next intersect
+          if (j + 1 < ill) line.push(intersectionList[j + 1].intersect)
+        } else {
+          // first store the next intersect should it exist
+          if (j + 1 < ill) line.push(intersectionList[j + 1].intersect)
+          // than store the intermediateLine
+          line.push(...intermediateLine)
+        }
+        // lastly store the current intersect to "close" the poly
+        line.push(intersect)
+        // store the line and restart
+        newPolyLines.push(line)
+        line = []
       }
+      // store first intersect to the main lineString and update "last" index
+      newOuterRing.push(intersectionList[0].intersect)
+      currentIndex = intersectionList[0].index + 1
     }
-    // rever intersectionList for next set
-    intersectionList.reverse()
-    // middle store
-    newOuterRing.push(...lineString.slice(start + 1, intersectionList[0].index + 1))
-    // backwards store
-    for (let j = 0, ill = intersectionList.length; j < ill; j++) {
-      const { index, intersect } = intersectionList[j]
-      // first store the intersect
-      newOuterRing.push(intersect)
-      // if even index, we add intermediateLine, otherwise just add the next intersection
-      if (j % 2 !== 0 && j + 1 < ill) {
-        // get the content between intersects
-        startIndex = index
-        nextIndex = intersectionList[j + 1].index
-        // slice always looks 1 forward
-        startIndex++
-        nextIndex++
-        minIndex = Math.min(startIndex, nextIndex)
-        maxIndex = Math.max(startIndex, nextIndex)
-        // create next inner contents of the line and store
-        newOuterRing.push(...lineString.slice(minIndex, maxIndex))
-      }
-    }
-    currentIndex = intersectionList[intersectionList.length - 1].index + 1
   }
   if (currentIndex < lineString.length) newOuterRing.push(...lineString.slice(currentIndex, lineString.length))
-  return removeKinks(newOuterRing)
+  return [newOuterRing, newPolyLines]
 }
 
 function findKinks (lineString: LineString): Intersections
@@ -222,9 +223,7 @@ function intersects (x1: number, y1: number, x2: number, y2: number, x3: number,
   if (!det) return
   const lambda = ((y4 - y3) * (x4 - x1) + (x3 - x4) * (y4 - y1)) / det
   const gamma = ((y1 - y2) * (x4 - x1) + (x2 - x1) * (y4 - y1)) / det
-  const lambdaEps = Math.round(lambda * 10000000000) / 10000000000
-  const gammaEps = Math.round(gamma * 10000000000) / 10000000000
-  if ((lambdaEps > 0 && lambdaEps < 1) && (gammaEps > 0 && gammaEps < 1)) {
+  if ((lambda > 0 && lambda < 1) && (gamma > 0 && gamma < 1)) {
     return [x1 + lambda * (x2 - x1), y1 + lambda * (y2 - y1)]
   }
 }
